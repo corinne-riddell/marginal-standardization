@@ -1,0 +1,208 @@
+---
+title: "Marginal standardization"
+output:
+  html_document: default
+date: "2024-10-28"
+---
+
+```{r load-libraries}
+
+#uncomment and compile the install.packages() code if you need to install any of
+#these libraries.
+# install.packages("tidyverse")
+# install.packages("broom")
+# install.packages("readxl")
+# install.packages("magrittr")
+
+library(tidyverse)
+library(broom)
+library(readxl)
+library(magrittr)
+```
+
+```{r import-data}
+photo_dat <- read_xls("../data/phototherapy.xls")
+```
+
+```{r look-at-data}
+names(photo_dat)
+str(photo_dat)
+head(photo_dat)
+```
+
+**Description of dataset**
+
+* These data were downloaded from the textbook course site 
+https://regression.ucsf.edu/second-edition/data-examples-and-problems
+
+* From UCSF authors!
+
+* These data look for the effect of phototherapy on neonatal jaundice within 
+babies born in the Northern California Kaiser Permanente system over a 10-year
+period, 1995-2004.
+
+**Exposure of interest**
+
+```{r}
+table(photo_dat$phototherapy)
+
+##22% (~1 in 5) infants exposed to phototherapy
+round(prop.table(table(photo_dat$phototherapy))*100, 2)
+```
+
+**Outcome of interest**
+
+```{r}
+table(photo_dat$over_thresh)
+
+# 0.62 (or 62 per 10,000 infants) have the outcome of interest 
+# --> rare event
+round(prop.table(table(photo_dat$over_thresh))*100, 2)
+```
+
+**Crude risk among infants with phototherapy**
+
+```{r}
+photo_dat %>% 
+  filter(phototherapy == "yes") %>% 
+  count(over_thresh) %>% 
+  mutate(risk = round((n/sum(n))*100, 2))
+```
+
+```{r}
+photo_dat %>% 
+  filter(phototherapy == "no") %>% 
+  count(over_thresh) %>%
+  mutate(risk = round((n/sum(n))*100, 2))
+```
+
+Summary: 70 out of every 10,000 infants develop the outcome among those without phototherapy compared to 33 out of every 10000 infants with photo-therapy.
+
+*IF* (and that is a BIG IF) the crude association could be interpreted causally,
+then we could say that phototherapy averted 70-33 = 37 cases of the outcome for
+every 10,000 infants treated with phototherapy.
+
+Remember this is a crude (unadjusted) effect estimate so there are **strong** assumptions required to interpret this causally, such as the treated and 
+untreated populations being exchangeable. 
+
+```{r data-cleaning}
+photo_dat <- photo_dat %>% mutate(over_thresh2 = if_else(over_thresh == "no", 0, 1))
+photo_dat <- photo_dat %>% mutate(phototherapy2 = if_else(phototherapy == "no", 0, 1))
+
+table(photo_dat$qual_TSB)
+#categorical variable with 6 levels
+str(photo_dat$qual_TSB)
+#this variable is stored as a string variable type 
+
+#####################################
+######## tidy TSB variable ##########
+#####################################
+
+#to use this variable in R, we need to recode it as a factor variable and can do this in two steps:
+photo_dat <- photo_dat %>% 
+  mutate(qual_TSB2 = as.factor(qual_TSB), #store as a factor variable
+         #reorder the factor levels so that "0 to <1" is the referent category, followed by the other levels:
+         qual_TSB_f = fct_relevel(qual_TSB2, 
+                                  "0 to <1", 
+                                  "-3 to <-2",
+                                  "-2 to <-1",
+                                  "-1 to <0", 
+                                  "1 to <2", 
+                                  "2 to <3"))
+
+photo_dat %<>% select(-qual_TSB2) #remove variable used only for coding
+
+########################################
+######## tidy gestational age ##########
+########################################
+
+#to use this variable in R, we need to recode it as a factor variable and can do this in two steps:
+photo_dat <- photo_dat %>% 
+  mutate(gest_age2 = as.factor(gest_age), #store as a factor variable
+         #reorder the factor levels so that 40 weeks is the referent category, followed by the other levels:
+         gest_age_f = fct_relevel(gest_age2, 
+                                  "40", "35", "36", "37", "38", "39", ">=41"))
+
+photo_dat %<>% select(-gest_age2) #remove variable used only for coding
+
+########################################
+######## tidy current age ##########
+########################################
+
+#to use this variable in R, we need to recode it as a factor variable and can do this in two steps:
+photo_dat <- photo_dat %>% 
+  mutate(age_days2 = as.factor(age_days), #store as a factor variable
+         #reorder the factor levels so that 40 weeks is the referent category, followed by the other levels:
+         age_days_f = fct_relevel(age_days2,
+                                  "48 to <72h", "<24 h", "24 to <48h", 
+                                  "72 to <96h", ">= 96h"))
+
+photo_dat %<>% select(-age_days2) #remove variable used only for coding
+
+photo_dat %<>% mutate(male_f = factor(male))
+```
+
+Before we run an adjusted model, below, suppose that we made a DAG and 
+identified the following variables as hypothesized confounders of the 
+relationship between the exposre of interest (`phototherapy2`) and the outcome
+of interest (`over_thresh2`): qual_TSB_f, gest_age_f, birth_wt, age_days_f, 
+male_f.
+
+```{r adjusted-model}
+adjusted_model <- glm(over_thresh2 ~ phototherapy2 + qual_TSB_f + gest_age_f + 
+                          birth_wt + age_days_f + male_f, data = photo_dat, 
+                      family = "binomial")
+
+summary(adjusted_model)
+tidy(adjusted_model)
+```
+
+```{r set-exposure-for-parallel-worlds}
+photo_dat %<>% mutate(pred_obs  = predict(adjusted_model, type = "response"))
+
+# Create  a duplicated version of these data, except **SETTING** everyone's exposure
+# value to 0
+photo_dat_0 <- photo_dat %>% mutate(phototherapy2 = 0)
+
+# Create another duplicated version of these data, except **SETTING** everyone's exposure
+# value to 1
+photo_dat_1 <- photo_dat %>% mutate(phototherapy2 = 1)
+
+#take a look at the first six rows of each dataset and ensure exposure is equal 
+#to zero as expected:
+head(photo_dat_0)
+
+#take a look at the first six rows of each dataset and ensure exposure is equal 
+#to one as expected:
+head(photo_dat_1)
+```
+
+```{r predict-for-each-world}
+photo_dat %<>% 
+  mutate(pred_set_untreated = predict(adjusted_model, type = "response",
+                                      newdata = photo_dat_0))
+
+photo_dat %<>% 
+  mutate(pred_set_treated = predict(adjusted_model, type = "response",
+                                    newdata = photo_dat_1))
+
+photo_dat %>% head() %>% View()
+```
+
+```{r}
+# given that the predicted probabilities are so small, multiple them by 1000:
+photo_dat %<>% mutate(pred_set_untreated2 = pred_set_untreated*10000,
+                      pred_set_treated2 = pred_set_treated*10000)
+
+
+# calculate the average (aka marginal) risk ratio (rr), odds ratio (or) and risk 
+# difference (rd)
+photo_dat %>% summarise(risk_set_untreated = mean(pred_set_untreated),
+                        risk_set_treated = mean(pred_set_treated),
+                        odds_treated = risk_set_treated/(1-risk_set_treated),
+                        odds_untreated = risk_set_untreated/(1-risk_set_untreated),
+                        rd = risk_set_treated - risk_set_untreated,
+                        rd_per1k = rd * 1000,
+                        rr = risk_set_treated/risk_set_untreated,
+                        or = odds_treated/odds_untreated) %>% View()
+```
